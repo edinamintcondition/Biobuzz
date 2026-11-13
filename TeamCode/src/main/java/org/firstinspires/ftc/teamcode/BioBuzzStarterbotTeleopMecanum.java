@@ -31,6 +31,7 @@ import com.qualcomm.robotcore.hardware.DcMotor;
 import com.qualcomm.robotcore.hardware.DcMotorEx;
 import com.qualcomm.robotcore.hardware.DcMotorSimple;
 import com.qualcomm.robotcore.hardware.PIDFCoefficients;
+import com.qualcomm.robotcore.util.ElapsedTime;
 
 /*
  * This file includes a teleop (driver-controlled) file for the goBILDA® StarterBot with Mecanum
@@ -76,6 +77,16 @@ public class BioBuzzStarterbotTeleopMecanum extends OpMode {
     public final int LAUNCHER_TARGET_VELOCITY = 1250; //2678 RPM
     public final int LAUNCHER_MIN_VELOCITY = 1200; //2571 RPM
 
+    private enum LauncherState {
+        OFF,
+        SPINNING_UP,
+        READY_TO_LAUNCH,
+        STOPPING,
+        REVERSING
+    }
+
+    private LauncherState launcherState = LauncherState.OFF;
+    private ElapsedTime stopTimer = new ElapsedTime();
 
     /*
      * These four variables store the power we need to apply to the motors. In other cases, we may
@@ -267,31 +278,54 @@ public class BioBuzzStarterbotTeleopMecanum extends OpMode {
 
     void launch() {
         /*
-         * Calling gamepad1.right_bumper returns a boolean which will be true if the bumper is
-         * held down, and false if it is not. Notably, this will continue to be true for every
-         * cycle of our code that the driver holds down that bumper.
-         * The first step of our launch() function is checking to see if the user is currently
-         * holding down the right gamepad. If they are, then we want to start spinning up the launcher.
-         * Otherwise, we start spinning the launcher down.
+         * This function implements a state machine to control the launcher motor. The state machine
+         * has five states, OFF, SPINNING_UP, READY_TO_LAUNCH, STOPPING, and REVERSING.
+         * The OFF state is the default state. When the driver presses the right bumper, the launcher
+         * motor will spin up to the target velocity. Once it reaches that velocity, it will enter
+         * the READY_TO_LAUNCH state. In this state, the windmill servo will run to feed elements into
+         * the launcher. When the driver releases the right bumper, it will enter the STOPPING state.
+         * In this state, we start a timer and immediately enter the REVERSING state. In this state,
+         * we reverse the launcher motor for 0.5 seconds to help stop the launcher wheel from spinning.
+         * This is important because if we just stop the motor, the inertia of the wheel will keep it
+         * spinning for a while, and it may throw elements at an unpredictable speed. By reversing
+         * the motor for a short time, we can more quickly stop the launcher wheel. After 0.5 seconds,
+         * we stop the launcher motor and return to the OFF state.
          */
-        if (gamepad1.right_bumper) {
-            launcher.setVelocity(LAUNCHER_TARGET_VELOCITY);
-        } else {
-            launcher.setVelocity(0);
-        }
-
-        /*
-         * Here we ask if the driver is currently pressing the right bumper, AND the launcher is
-         * spinning fast enough to make a successful shot. If it is, then we will turn on the
-         * windmill servo to start feeding the elements into the launcher motor. We also
-         * add some power to the intake power. This can sometimes help dislodge stuck elements from
-         * inside the hopper.
-         */
-        if (gamepad1.right_bumper && launcher.getVelocity() > LAUNCHER_MIN_VELOCITY) {
-            windmillServo.setPower(1);
-            intakePower += 0.5;
-        } else {
-            windmillServo.setPower(0);
+        switch (launcherState) {
+            case OFF:
+                if (gamepad1.right_bumper) {
+                    launcher.setVelocity(LAUNCHER_TARGET_VELOCITY);
+                    launcherState = LauncherState.SPINNING_UP;
+                } else {
+                    launcher.setVelocity(0);
+                }
+                break;
+            case SPINNING_UP:
+                if (!gamepad1.right_bumper) {
+                    launcher.setVelocity(0);
+                    launcherState = LauncherState.STOPPING;
+                } else if (launcher.getVelocity() > LAUNCHER_MIN_VELOCITY) {
+                    launcherState = LauncherState.READY_TO_LAUNCH;
+                }
+                break;
+            case READY_TO_LAUNCH:
+                if (!gamepad1.right_bumper) {
+                    launcherState = LauncherState.STOPPING;
+                } else {
+                    windmillServo.setPower(1);
+                }
+                break;
+            case STOPPING:
+                stopTimer.reset();
+                launcherState = LauncherState.REVERSING;
+                break;
+            case REVERSING:
+                if (stopTimer.seconds() < 0.5) {
+                    launcher.setVelocity(-LAUNCHER_TARGET_VELOCITY);
+                } else {
+                    launcher.setVelocity(0);
+                    launcherState = LauncherState.OFF;
+                }
         }
     }
 }
